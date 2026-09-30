@@ -1,0 +1,124 @@
+/**
+ * Importer admin styles.
+ *
+ * @package GEI
+ */
+
+.gei-steps {
+	display: flex;
+	gap: 8px;
+	list-style: none;
+	margin: 16px 0 24px;
+	padding: 0;
+	flex-wrap: wrap;
+}
+
+.gei-steps li {
+	background: #f0f0f1;
+	border-radius: 3px;
+	color: #50575e;
+	margin: 0;
+	padding: 6px 14px;
+}
+
+.gei-steps li.is-active {
+	background: #2271b1;
+	color: #fff;
+	font-weight: 600;
+}
+
+.gei-card {
+	background: #fff;
+	border: 1px solid #c3c4c7;
+	border-radius: 4px;
+	margin-top: 16px;
+	padding: 8px 20px 20px;
+	max-width: 1100px;
+}
+
+/*
+ * Inside Gravity Forms' own Import/Export tab, .gei-card sits inside
+ * Gravity Forms' .gform-settings-panel, which already draws the white card
+ * and border shown around Export Entries / Export Forms / Import Forms. Left
+ * as-is, the two borders would nest and read as a box within a box - so the
+ * card's own border/background is dropped here and GF's panel does that job.
+ */
+.gei-tab .gei-card {
+	background: transparent;
+	border: 0;
+	border-radius: 0;
+	margin-top: 0;
+	padding: 0;
+	max-width: none;
+}
+
+.gei-tab .gei-steps {
+	margin-top: 0;
+}
+
+.gei-summary {
+	font-size: 14px;
+	margin: 16px 0;
+}
+
+.gei-map {
+	margin-top: 8px;
+}
+
+.gei-map th,
+.gei-map td {
+	vertical-align: middle;
+}
+
+.gei-map select {
+	max-width: 100%;
+	min-width: 220px;
+}
+
+.gei-sample {
+	color: #646970;
+	font-family: Consolas, Monaco, monospace;
+	font-size: 12px;
+	word-break: break-word;
+}
+
+.gei-progress {
+	background: #f0f0f1;
+	border-radius: 3px;
+	height: 22px;
+	margin: 16px 0 8px;
+	overflow: hidden;
+	max-width: 640px;
+}
+
+.gei-progress-bar {
+	background: #2271b1;
+	height: 100%;
+	transition: width 200ms ease;
+	width: 0;
+}
+
+.gei-status {
+	font-weight: 600;
+	margin: 8px 0 16px;
+	min-height: 1.4em;
+}
+
+.gei-errors {
+	color: #b32d2e;
+	font-size: 13px;
+	margin: 0;
+	max-height: 260px;
+	overflow-y: auto;
+}
+
+.gei-errors li {
+	margin: 0 0 4px;
+}
+
+@media screen and (max-width: 782px) {
+	.gei-map select {
+		min-width: 0;
+		width: 100%;
+	}
+}
