@@ -116,6 +116,79 @@
 	margin: 0 0 4px;
 }
 
+/*
+ * Present in the run step's markup on every load (see
+ * GEI_Admin::render_run_step()) so admin.js only has to toggle it once a
+ * batch response reports a failed-rows file exists, rather than build the
+ * link itself.
+ */
+.gei-failed-download {
+	display: none;
+}
+
+.gei-duplicate-mode {
+	border: 0;
+	margin: 8px 0 0;
+	padding: 0;
+}
+
+.gei-duplicate-mode label {
+	margin-right: 16px;
+}
+
+.gei-validation-issues {
+	margin: 8px 0 16px;
+}
+
+.gei-validation-actions {
+	margin-top: 16px;
+}
+
+/*
+ * The "Load a saved mapping" (GET) and "Delete this saved mapping" (POST)
+ * forms sit side by side above the mapping table, but are kept as two
+ * independent <form> elements - see GEI_Admin::render_template_bar() - since
+ * an HTML form can never be nested inside another.
+ */
+.gei-template-bar {
+	align-items: center;
+	display: flex;
+	flex-wrap: wrap;
+	gap: 8px 16px;
+	margin: 0 0 16px;
+}
+
+.gei-template-bar form {
+	align-items: center;
+	display: flex;
+	flex-wrap: wrap;
+	gap: 8px;
+	margin: 0;
+}
+
+.gei-template-loaded {
+	font-style: italic;
+}
+
+.gei-filter-rule {
+	align-items: center;
+	display: flex;
+	flex-wrap: wrap;
+	gap: 8px;
+}
+
+.gei-history-links {
+	margin: 8px 0 16px;
+}
+
+.gei-history-links li {
+	margin: 0 0 4px;
+}
+
+.gei-history {
+	margin: 8px 0 16px;
+}
+
 @media screen and (max-width: 782px) {
 	.gei-map select {
 		min-width: 0;

@@ -22,6 +22,23 @@ class GEI_Mapper {
 	const META_PREFIX = '__';
 
 	/**
+	 * Target key for an entry note mapped from a CSV column.
+	 *
+	 * Listed alongside every other entry-metadata target in get_meta_targets()
+	 * so it appears on the mapping screen the same way, but it is not a column
+	 * on the entry array the way every other meta target is - an entry note is
+	 * stored in Gravity Forms' own, separate notes table, added only after the
+	 * entry itself already exists (see GEI_Importer::maybe_add_note()), never
+	 * written by apply_meta(). Kept as its own constant, rather than a bare
+	 * string repeated in both places, so the mapping-screen target and the
+	 * importer's own read of the mapped cell can never drift apart.
+	 *
+	 * @since 1.5.0
+	 * @var string
+	 */
+	const NOTE_TARGET_KEY = self::META_PREFIX . 'entry_note';
+
+	/**
 	 * Field types that hold no submitted value and cannot be imported into.
 	 *
 	 * @var array
@@ -162,8 +179,14 @@ class GEI_Mapper {
 				'label'  => $field_label,
 				'type'   => $type,
 				'group'  => $field_label,
-				// Encoded values are not safe to match an entry query against.
-				'scalar' => ! in_array( $type, array( 'multiselect', 'list' ), true ),
+				// Encoded values are not safe to match an entry query
+				// against. A File Upload field's stored value is a URL this
+				// plugin itself generates during import (see
+				// GEI_File_Field::resolve_row_files()), never something the
+				// CSV cell can be meaningfully compared against, so it is
+				// excluded from the duplicate-match field list the same way
+				// multiselect and list already are.
+				'scalar' => ! in_array( $type, array( 'multiselect', 'list', 'fileupload' ), true ),
 			);
 		}
 
@@ -198,7 +221,41 @@ class GEI_Mapper {
 			self::META_PREFIX . 'payment_status' => __( 'Payment status', 'gravity-entry-import' ),
 			self::META_PREFIX . 'payment_amount' => __( 'Payment amount', 'gravity-entry-import' ),
 			self::META_PREFIX . 'transaction_id' => __( 'Transaction ID', 'gravity-entry-import' ),
+			self::NOTE_TARGET_KEY                => __( 'Entry note (added to the note timeline, not a field)', 'gravity-entry-import' ),
 		);
+	}
+
+	/**
+	 * Extracts the raw CSV value mapped to the entry-note target, if any.
+	 *
+	 * An entry note is not a column on the entry array the way every other
+	 * entry-metadata target is (see apply_meta()'s own explicit no-op case for
+	 * NOTE_TARGET_KEY) - it is added separately, after the entry itself has
+	 * already been created or updated, via GFFormsModel::add_note() (see
+	 * GEI_Importer::maybe_add_note()). This reads the one mapped cell that
+	 * matters for that write, trimmed the same way apply_mapping() trims
+	 * every other cell, without touching the entry array at all - callers
+	 * never need to inspect $mapping/$row for this target key themselves.
+	 *
+	 * @since 1.5.0
+	 *
+	 * @param array $row     CSV row values, indexed by column.
+	 * @param array $mapping Map of target key to column index.
+	 * @return string Trimmed raw cell value, or an empty string when the note
+	 *                target is not mapped (or the cell is blank) for this row.
+	 */
+	public static function get_mapped_note( array $row, array $mapping ) {
+		if ( ! isset( $mapping[ self::NOTE_TARGET_KEY ] ) ) {
+			return '';
+		}
+
+		$column = $mapping[ self::NOTE_TARGET_KEY ];
+
+		if ( '' === $column || null === $column || ! isset( $row[ $column ] ) ) {
+			return '';
+		}
+
+		return trim( (string) $row[ $column ] );
 	}
 
 	/**
@@ -263,6 +320,86 @@ class GEI_Mapper {
 	 */
 	public static function build_entry( $form, array $row, array $mapping ) {
 		$entry = array( 'form_id' => (int) $form['id'] );
+
+		self::apply_mapping( $entry, $form, $row, $mapping );
+
+		return self::finalize_entry( $entry, $form );
+	}
+
+	/**
+	 * Builds the full entry array for updating an existing entry from one
+	 * mapped CSV row, for the "Update" duplicate-handling mode.
+	 *
+	 * GFAPI::update_entry() does not merge a partial array onto the stored
+	 * entry - confirmed by reading its field-update loop in Gravity Forms' own
+	 * includes/api.php (GFAPI::queue_batch_field_operation()), where any field
+	 * ID absent from the array it is given defaults to an empty string and is
+	 * written over whatever the entry already held. Passing only this row's
+	 * mapped values would therefore blank out every field the CSV did not map
+	 * for this row.
+	 *
+	 * To avoid that, $current_entry (the full existing entry, as returned by
+	 * GFAPI::get_entry()) is used as the starting point, and only the cells
+	 * this row's mapping actually supplies are overlaid on top of it via the
+	 * same apply_mapping() logic build_entry() uses for a new row. Everything
+	 * else - every other field, and every entry-level property such as status,
+	 * IP or payment fields - is left exactly as GFAPI::get_entry() returned it.
+	 *
+	 * Deliberately skips finalize_entry(): its new-entry defaults
+	 * (date_created, status, is_read, ip, source_url, unattributed
+	 * created_by) exist so a brand new row always inserts something sane.
+	 * Reapplying them here would overwrite a real historical date, status or
+	 * IP on every update with a placeholder, purely because that column
+	 * happened not to be mapped for this run - the opposite of "don't touch
+	 * what the CSV didn't map".
+	 *
+	 * One known simplification: a checkbox field mapped as a single
+	 * delimited-list column (its whole-field target, not a per-choice
+	 * sub-input) only turns ON the boxes present in this row's list - it does
+	 * not clear boxes the existing entry had checked that are absent from
+	 * this row's value. That mirrors apply_checkbox_list()'s own behaviour for
+	 * a new entry (which starts empty, so there is nothing to clear), and was
+	 * judged the safer default for an update rather than risk silently
+	 * unchecking something this column was never meant to speak to.
+	 *
+	 * @since 1.2.0
+	 *
+	 * @param array $form          Gravity Forms form object.
+	 * @param array $row           CSV row values, indexed by column.
+	 * @param array $mapping       Map of target key to column index.
+	 * @param array $current_entry The existing entry, as returned by GFAPI::get_entry().
+	 * @return array Full entry array suitable for GFAPI::update_entry().
+	 */
+	public static function build_update_entry( $form, array $row, array $mapping, array $current_entry ) {
+		$entry = $current_entry;
+
+		self::apply_mapping( $entry, $form, $row, $mapping );
+
+		/** This filter is documented in includes/class-gei-mapper.php */
+		return apply_filters( 'gei_entry', $entry, $form );
+	}
+
+	/**
+	 * Writes every mapped cell of one CSV row into an entry array.
+	 *
+	 * Factored out of build_entry() so build_update_entry() can run the exact
+	 * same per-cell mapping logic against a different starting point - the
+	 * full current entry for a row being updated, rather than a blank one -
+	 * without duplicating it. This only ever writes the cells the mapping
+	 * actually supplies; it does not fill in finalize_entry()'s new-entry
+	 * defaults or run the gei_entry filter, both of which are the caller's
+	 * responsibility (build_entry() does both; build_update_entry()
+	 * deliberately skips the defaults - see its own DocBlock for why).
+	 *
+	 * @since 1.2.0
+	 *
+	 * @param array $entry   Entry array to write into, passed by reference.
+	 * @param array $form    Gravity Forms form object.
+	 * @param array $row     CSV row values, indexed by column.
+	 * @param array $mapping Map of target key to column index.
+	 * @return void
+	 */
+	protected static function apply_mapping( array &$entry, $form, array $row, array $mapping ) {
 		$fields = self::index_fields( $form );
 
 		foreach ( $mapping as $key => $column ) {
@@ -286,19 +423,22 @@ class GEI_Mapper {
 
 			self::apply_field( $entry, $field, $key, $value );
 		}
-
-		return self::finalize_entry( $entry, $form );
 	}
 
 	/**
 	 * Indexes a form's fields by their integer ID.
+	 *
+	 * Public since 1.2.0 so GEI_Validator can resolve a mapped target key back
+	 * to its field object once per batch, the same pre-fetch-over-per-row-work
+	 * this codebase already favours elsewhere (see fetch_existing_values() in
+	 * GEI_Importer).
 	 *
 	 * @since 1.0.0
 	 *
 	 * @param array $form Gravity Forms form object.
 	 * @return array Map of field ID to field object.
 	 */
-	protected static function index_fields( $form ) {
+	public static function index_fields( $form ) {
 		$indexed = array();
 
 		if ( empty( $form['fields'] ) ) {
@@ -383,6 +523,22 @@ class GEI_Mapper {
 			case 'radio':
 			case 'select':
 				$entry[ $key ] = self::match_choice_value( $field, $value );
+				break;
+
+			case 'fileupload':
+				// Never resolved to a real file here: this method is also
+				// used by GEI_Validator's read-only preview (see
+				// GEI_Validator::evaluate_row(), which calls
+				// GEI_Mapper::build_entry() purely to inspect it), and
+				// resolving a File Upload cell can mean an outbound HTTP
+				// request or a filesystem write - a side effect Validate
+				// must never perform. The raw cell is stored as a
+				// placeholder; GEI_Importer::process_batch() (and, for
+				// "Update" mode, GEI_Importer::update_existing_entry())
+				// overwrite it with the real, GF-hosted file URL - or fail
+				// the row - immediately before the entry is inserted or
+				// updated. See GEI_File_Field::resolve_row_files().
+				$entry[ $key ] = $value;
 				break;
 
 			default:
@@ -522,13 +678,17 @@ class GEI_Mapper {
 	 * therefore tested against the field's choices first, and only split when
 	 * it is not itself a single valid choice.
 	 *
+	 * Public since 1.2.0 so GEI_Validator can tokenize a multiselect cell the
+	 * same way encode_multiselect() does, rather than re-deriving its own
+	 * splitting rule that could quietly drift out of sync with the real import.
+	 *
 	 * @since 1.0.0
 	 *
 	 * @param object $field Gravity Forms field object.
 	 * @param string $value Raw CSV value.
 	 * @return array List of choice tokens.
 	 */
-	protected static function split_choices( $field, $value ) {
+	public static function split_choices( $field, $value ) {
 		$value = trim( (string) $value );
 
 		if ( '' === $value ) {
@@ -597,6 +757,95 @@ class GEI_Mapper {
 		}
 
 		return $value;
+	}
+
+	/**
+	 * Determines whether a raw CSV value matches one of a field's configured
+	 * choices, without match_choice_value()'s real-import fallback.
+	 *
+	 * match_choice_value() (and, in their own ways, resolve_checkbox_input()
+	 * and the per-token matching inside encode_multiselect()) all deliberately
+	 * fall back to keeping an unmatched value rather than rejecting it, so a
+	 * real import is never silently emptied just because the source data used
+	 * a label the form does not define. That fallback is exactly what a
+	 * pre-import validation pass needs to flag instead of hide, so this is a
+	 * separate, read-only predicate: it changes nothing about what a real
+	 * import stores, and match_choice_value() itself is left untouched.
+	 *
+	 * @since 1.2.0
+	 *
+	 * @param object $field Gravity Forms field object.
+	 * @param string $value Raw CSV value to test.
+	 * @return bool True when the value matches one of the field's choices by
+	 *              label or stored value, case-insensitively.
+	 */
+	public static function choice_matches( $field, $value ) {
+		$value = trim( (string) $value );
+
+		if ( '' === $value || empty( $field->choices ) ) {
+			return false;
+		}
+
+		$needle = strtolower( $value );
+
+		foreach ( self::to_array( $field->choices ) as $choice ) {
+			$text       = isset( $choice['text'] ) ? strtolower( $choice['text'] ) : '';
+			$choice_val = isset( $choice['value'] ) ? strtolower( $choice['value'] ) : '';
+
+			if ( $needle === $text || $needle === $choice_val ) {
+				return true;
+			}
+		}
+
+		return false;
+	}
+
+	/**
+	 * Determines whether a raw CSV value would be recognised for one specific
+	 * checkbox sub-input, mirroring resolve_checkbox_input()'s own matching
+	 * rule (the sub-input's own choice, or a boolean-truthy flag) without
+	 * mutating anything or applying its "anything else means unchecked"
+	 * fallback silently.
+	 *
+	 * A real import never treats an unrecognised value here as an error -
+	 * resolve_checkbox_input() deliberately leaves the box unchecked instead -
+	 * so this exists purely so the validator can surface "this will silently
+	 * be left unchecked" as a possible issue, without resolve_checkbox_input()
+	 * itself changing at all. Checked against the sub-input's own single
+	 * choice specifically (not "any of the field's choices" the way
+	 * choice_matches() works for radio/select/multiselect), because that is
+	 * what actually determines this one box's state on a real import.
+	 *
+	 * @since 1.2.0
+	 *
+	 * @param object $field    Gravity Forms field object.
+	 * @param string $value    Raw CSV value.
+	 * @param string $input_id Input ID being checked, e.g. "4.2".
+	 * @return bool True when the value would check this specific box.
+	 */
+	public static function checkbox_input_matches( $field, $value, $input_id ) {
+		$value = trim( (string) $value );
+
+		if ( '' === $value ) {
+			return false;
+		}
+
+		$index = self::choice_index_for_input( $field, $input_id );
+
+		if ( null === $index || ! isset( $field->choices[ $index ] ) ) {
+			return false;
+		}
+
+		$choice   = $field->choices[ $index ];
+		$needle   = strtolower( $value );
+		$is_match = ( isset( $choice['text'] ) && strtolower( $choice['text'] ) === $needle )
+			|| ( isset( $choice['value'] ) && strtolower( $choice['value'] ) === $needle );
+
+		if ( $is_match ) {
+			return true;
+		}
+
+		return in_array( $needle, array( '1', 'yes', 'true', 'x', 'checked', 'y' ), true );
 	}
 
 	/**
@@ -872,6 +1121,18 @@ class GEI_Mapper {
 			case 'payment_status':
 			case 'transaction_id':
 				$entry[ $key ] = $value;
+				break;
+
+			case 'entry_note':
+				// Deliberately a no-op: an entry note is not a column on the
+				// entry array at all, so there is nothing to write here. The
+				// raw cell is read separately, by key, via get_mapped_note(),
+				// and turned into a real Gravity Forms note only once the
+				// entry this note belongs to actually exists (see
+				// GEI_Importer::maybe_add_note()). Listed explicitly, rather
+				// than left to fall through an unmatched switch silently, so
+				// a reader of this switch is not left wondering why
+				// NOTE_TARGET_KEY's suffix never appears here.
 				break;
 		}
 	}

@@ -75,6 +75,30 @@ class GEI_Storage {
 			return false;
 		}
 
+		self::protect_dir( $dir );
+
+		return true;
+	}
+
+	/**
+	 * Writes the deny-all .htaccess and index.php stub into a directory.
+	 *
+	 * Factored out of ensure_upload_dir() so ensure_files_dir() - the
+	 * pre-staged local-file directory added in 1.4.0 for the File Upload
+	 * column source (see GEI_File_Field) - can apply the exact same
+	 * hardening to its own, deeper directory without duplicating the rule
+	 * text. Apache already applies a parent directory's .htaccess to its
+	 * subdirectories on its own, but this is written into every directory
+	 * this plugin creates anyway rather than relied upon implicitly, since
+	 * that inheritance is an Apache-specific behaviour this plugin has no way
+	 * to guarantee on every host it runs on.
+	 *
+	 * @since 1.4.0
+	 *
+	 * @param string $dir Absolute path to an already-created directory.
+	 * @return void
+	 */
+	protected static function protect_dir( $dir ) {
 		$htaccess = trailingslashit( $dir ) . '.htaccess';
 		if ( ! file_exists( $htaccess ) ) {
 			// Both blocks are guarded: a bare "Require all denied" is a 500 on
@@ -93,6 +117,64 @@ class GEI_Storage {
 		if ( ! file_exists( $index ) ) {
 			file_put_contents( $index, "<?php\n// Silence is golden.\n" ); // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_file_put_contents
 		}
+	}
+
+	/**
+	 * Returns the absolute path to one job's pre-staged local-files directory.
+	 *
+	 * This is the "local, pre-staged files" source mode's own directory (see
+	 * GEI_File_Field): a separate subdirectory per job, under this plugin's
+	 * existing hardened upload area, rather than a single shared directory for
+	 * every job - two jobs staging a file with the same name can never collide
+	 * or overwrite one another, and pruning one job's files (see
+	 * delete_job_files_dir()) can never touch another job's still-in-flight
+	 * files.
+	 *
+	 * @since 1.4.0
+	 *
+	 * @param string $job_id Job identifier.
+	 * @return string Absolute directory path, without a trailing slash, or an
+	 *                empty string when the job ID is invalid.
+	 */
+	public static function get_files_dir( $job_id ) {
+		$job_id = self::sanitize_job_id( $job_id );
+
+		if ( '' === $job_id ) {
+			return '';
+		}
+
+		return trailingslashit( self::get_upload_dir() ) . 'files/' . $job_id;
+	}
+
+	/**
+	 * Creates one job's pre-staged local-files directory and blocks direct
+	 * web access to it, the same way ensure_upload_dir() protects its parent.
+	 *
+	 * @since 1.4.0
+	 *
+	 * @param string $job_id Job identifier.
+	 * @return bool True when the directory exists and is protected.
+	 */
+	public static function ensure_files_dir( $job_id ) {
+		$dir = self::get_files_dir( $job_id );
+
+		if ( '' === $dir ) {
+			return false;
+		}
+
+		// The parent gei/ directory has to exist (and be protected) first -
+		// wp_mkdir_p() below would create it implicitly either way, but going
+		// through ensure_upload_dir() guarantees its own .htaccess/index.php
+		// are in place too, exactly as if the main CSV upload path had run.
+		if ( ! self::ensure_upload_dir() ) {
+			return false;
+		}
+
+		if ( ! wp_mkdir_p( $dir ) ) {
+			return false;
+		}
+
+		self::protect_dir( $dir );
 
 		return true;
 	}
@@ -283,6 +365,31 @@ class GEI_Storage {
 	}
 
 	/**
+	 * Builds the path to a job's failed-rows CSV.
+	 *
+	 * Named as a sibling of the main upload ({job_id}.csv / {job_id}-failed.csv)
+	 * inside the same hardened directory, purely from the job ID rather than
+	 * anything stored on the job record. That makes it derivable even for a
+	 * job whose own option row is missing or corrupt, which is exactly the
+	 * case prune_stale_jobs() has to cope with for its first, already-broken
+	 * branch.
+	 *
+	 * @since 1.2.0
+	 *
+	 * @param string $job_id Job identifier.
+	 * @return string Absolute path, or an empty string when the job ID is invalid.
+	 */
+	public static function get_failed_csv_path( $job_id ) {
+		$job_id = self::sanitize_job_id( $job_id );
+
+		if ( '' === $job_id ) {
+			return '';
+		}
+
+		return trailingslashit( self::get_upload_dir() ) . $job_id . '-failed.csv';
+	}
+
+	/**
 	 * Deletes a CSV file, refusing paths outside the plugin upload directory.
 	 *
 	 * @since 1.0.0
@@ -301,6 +408,61 @@ class GEI_Storage {
 		if ( file_exists( $path ) ) {
 			wp_delete_file( $path );
 		}
+	}
+
+	/**
+	 * Deletes one job's pre-staged local-files directory and everything in it.
+	 *
+	 * Unlike delete_job_file(), this removes a whole directory of
+	 * admin-chosen filenames rather than one file this plugin itself named -
+	 * get_files_dir()/ensure_files_dir() (see GEI_File_Field) are the only
+	 * places that ever write into it, but what an admin stages inside it is
+	 * their own batch of files with whatever names they have. The same
+	 * containment check delete_job_file() applies before deleting a single
+	 * path is applied here before touching the directory at all, even though
+	 * $job_id has already been through sanitize_job_id() via get_files_dir():
+	 * a directory delete is destructive enough to be worth the belt and
+	 * suspenders.
+	 *
+	 * @since 1.4.0
+	 *
+	 * @param string $job_id Job identifier.
+	 * @return void
+	 */
+	public static function delete_job_files_dir( $job_id ) {
+		$dir = self::get_files_dir( $job_id );
+
+		if ( '' === $dir || ! is_dir( $dir ) ) {
+			return;
+		}
+
+		$base = wp_normalize_path( self::get_upload_dir() );
+		$real = wp_normalize_path( $dir );
+
+		if ( 0 !== strpos( $real, trailingslashit( $base ) ) ) {
+			return;
+		}
+
+		// glob('*') does not return dotfiles, so the .htaccess guard file is
+		// removed explicitly afterward - matching uninstall.php's own
+		// reasoning for the same two-step sweep, so the final rmdir() below
+		// is not left failing silently on a leftover guard file forever.
+		foreach ( (array) glob( trailingslashit( $dir ) . '*' ) as $file ) {
+			if ( is_file( $file ) ) {
+				wp_delete_file( $file );
+			}
+		}
+
+		$htaccess = trailingslashit( $dir ) . '.htaccess';
+		if ( file_exists( $htaccess ) ) {
+			wp_delete_file( $htaccess );
+		}
+
+		// Leaves the directory in place if anything unexpected still lives in
+		// it (a subdirectory an admin created by hand, say), matching
+		// uninstall.php's own reasoning for using a silenced @rmdir() here
+		// rather than a recursive force-delete.
+		@rmdir( $dir ); // phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged, WordPress.WP.AlternativeFunctions.file_system_operations_rmdir
 	}
 
 	/**
@@ -418,6 +580,17 @@ class GEI_Storage {
 			if ( ! is_array( $job ) || empty( $job['created'] ) ) {
 				delete_option( $option_name );
 				delete_option( self::LOCK_OPTION_PREFIX . $job_id );
+				// Derived straight from the job ID rather than read off the
+				// (missing/corrupt) job record - see get_failed_csv_path() -
+				// so a failed-rows CSV can still be found and removed even
+				// when there is no usable job state left to say it exists.
+				self::delete_job_file( self::get_failed_csv_path( $job_id ) );
+				// Same reasoning, extended to the pre-staged local-files
+				// directory added in 1.4.0 (see GEI_File_Field): derivable
+				// from the job ID alone via get_files_dir(), so a batch of
+				// staged files is not stranded on disk just because the job
+				// record behind it is gone or unreadable.
+				self::delete_job_files_dir( $job_id );
 				++$removed;
 				continue;
 			}
@@ -426,6 +599,19 @@ class GEI_Storage {
 				if ( ! empty( $job['file'] ) ) {
 					self::delete_job_file( $job['file'] );
 				}
+				// A failed-rows CSV deliberately outlives job completion (see
+				// GEI_Importer::record_failed_row()) so it stays downloadable
+				// from the results screen; once the job itself is old enough
+				// to be pruned, nothing can reach that screen to download it
+				// any more, so it would otherwise become exactly the kind of
+				// orphaned file this method exists to clean up.
+				self::delete_job_file( self::get_failed_csv_path( $job_id ) );
+				// A pre-staged local-files directory (see GEI_File_Field) is,
+				// deliberately, not removed the moment the job completes -
+				// see this plugin's readme for why - so it is exactly as
+				// prunable by age as the job record itself, on the same
+				// schedule.
+				self::delete_job_files_dir( $job_id );
 				delete_option( $option_name );
 				// A job is never removed while still in flight, so its lock
 				// (if any) is stale too; without this, removing the job record

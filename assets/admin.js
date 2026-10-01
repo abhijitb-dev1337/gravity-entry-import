@@ -54,6 +54,7 @@
 		var bar = runner.querySelector( '.gei-progress-bar' );
 		var status = runner.querySelector( '.gei-status' );
 		var errorList = runner.querySelector( '.gei-errors' );
+		var failedDownload = runner.querySelector( '.gei-failed-download' );
 		var jobId = runner.getAttribute( 'data-job' );
 		var running = false;
 
@@ -69,7 +70,9 @@
 			status.textContent = gei.i18n.importing + ' ' +
 				data.processed + ' / ' + data.total +
 				' — ' + data.imported + ' imported, ' +
+				data.updated + ' updated, ' +
 				data.skipped + ' skipped, ' +
+				data.filtered + ' filtered, ' +
 				data.failed + ' failed';
 
 			if ( data.errors && data.errors.length ) {
@@ -79,6 +82,14 @@
 					li.textContent = 'Row ' + err.row + ': ' + err.message;
 					errorList.appendChild( li );
 				} );
+			}
+
+			// The download link's href is a real, already-nonce'd URL rendered
+			// server-side (see GEI_Admin::render_run_step()); this only ever
+			// toggles whether it's shown, so the gated download itself stays a
+			// plain PHP request rather than something this script constructs.
+			if ( failedDownload ) {
+				failedDownload.style.display = data.failed_csv ? 'block' : 'none';
 			}
 		}
 
@@ -118,7 +129,9 @@
 					if ( payload.data.complete ) {
 						status.textContent = gei.i18n.done + ' ' +
 							payload.data.imported + ' imported, ' +
+							payload.data.updated + ' updated, ' +
 							payload.data.skipped + ' skipped, ' +
+							payload.data.filtered + ' filtered, ' +
 							payload.data.failed + ' failed.';
 						button.disabled = false;
 						button.style.display = 'none';
@@ -151,13 +164,91 @@
 		} );
 	}
 
+	/**
+	 * Drives the dry-run validation scan, one batch per request, reloading the
+	 * page once the server reports the scan complete.
+	 *
+	 * Unlike bindRunner(), this starts itself automatically rather than
+	 * waiting on a confirmed button click: a validation pass never writes
+	 * anything, so there is nothing here that needs the same "are you sure"
+	 * gate the real import's Start button has.
+	 *
+	 * Reloading on completion, rather than rendering the summary table here
+	 * too, keeps the summary's markup and counting logic in one place -
+	 * GEI_Admin::render_validation_summary(), reading the same job state this
+	 * request just finished writing - instead of duplicating it in both PHP
+	 * and JS.
+	 *
+	 * @return {void}
+	 */
+	function bindValidator() {
+		var validator = document.getElementById( 'gei-validator' );
+
+		if ( ! validator ) {
+			return;
+		}
+
+		var bar = validator.querySelector( '.gei-progress-bar' );
+		var status = validator.querySelector( '.gei-status' );
+		var jobId = validator.getAttribute( 'data-job' );
+
+		/**
+		 * Requests the next validation batch.
+		 *
+		 * @return {void}
+		 */
+		function step() {
+			var body = new FormData();
+			body.append( 'action', 'gei_process_validation_batch' );
+			body.append( 'nonce', gei.nonce );
+			body.append( 'job', jobId );
+
+			fetch( gei.ajaxUrl, {
+				method: 'POST',
+				credentials: 'same-origin',
+				body: body
+			} )
+				.then( function ( response ) {
+					return response.json();
+				} )
+				.then( function ( payload ) {
+					if ( ! payload || ! payload.success ) {
+						var message = ( payload && payload.data && payload.data.message ) ?
+							payload.data.message :
+							gei.i18n.failed;
+
+						status.textContent = message;
+						return;
+					}
+
+					bar.style.width = payload.data.percent + '%';
+					status.textContent = gei.i18n.validating + ' ' +
+						payload.data.processed + ' / ' + payload.data.total;
+
+					if ( payload.data.complete ) {
+						window.location.reload();
+						return;
+					}
+
+					step();
+				} )
+				.catch( function () {
+					status.textContent = gei.i18n.failed;
+				} );
+		}
+
+		step();
+	}
+
 	if ( 'loading' === document.readyState ) {
 		document.addEventListener( 'DOMContentLoaded', function () {
 			bindSamples();
 			bindRunner();
+			bindValidator();
 		} );
 	} else {
 		bindSamples();
 		bindRunner();
+		bindValidator();
 	}
 }() );

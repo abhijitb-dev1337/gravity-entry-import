@@ -2,7 +2,7 @@
 /**
  * Plugin Name:       Gravity Entry Import
  * Description:       Imports entries into Gravity Forms from a CSV file, with column-to-field mapping and batched, resumable processing.
- * Version:           1.1.1
+ * Version:           1.5.1
  * License:           GPL-2.0-or-later
  * License URI:       https://www.gnu.org/licenses/gpl-2.0.html
  * Text Domain:       gravity-entry-import
@@ -14,7 +14,7 @@
 
 defined( 'ABSPATH' ) || exit;
 
-define( 'GEI_VERSION', '1.1.1' );
+define( 'GEI_VERSION', '1.5.1' );
 define( 'GEI_FILE', __FILE__ );
 define( 'GEI_PATH', plugin_dir_path( __FILE__ ) );
 define( 'GEI_URL', plugin_dir_url( __FILE__ ) );
@@ -80,9 +80,15 @@ function gei_bootstrap() {
 	}
 
 	require_once GEI_PATH . 'includes/class-gei-storage.php';
+	require_once GEI_PATH . 'includes/class-gei-templates.php';
+	require_once GEI_PATH . 'includes/class-gei-history.php';
 	require_once GEI_PATH . 'includes/class-gei-csv-reader.php';
+	require_once GEI_PATH . 'includes/class-gei-row-filter.php';
 	require_once GEI_PATH . 'includes/class-gei-mapper.php';
+	require_once GEI_PATH . 'includes/class-gei-file-field.php';
+	require_once GEI_PATH . 'includes/class-gei-form-builder.php';
 	require_once GEI_PATH . 'includes/class-gei-importer.php';
+	require_once GEI_PATH . 'includes/class-gei-validator.php';
 	require_once GEI_PATH . 'includes/class-gei-admin.php';
 	require_once GEI_PATH . 'includes/class-gei-ajax.php';
 
